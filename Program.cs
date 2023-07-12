@@ -14,6 +14,9 @@ using MetadataExtractor;
 using System.Reflection.Metadata;
 using System.Security.Principal;
 using iTextSharp.text.pdf;
+using Aspose.Pdf.Operators;
+using DocumentFormat.OpenXml.Office2010.PowerPoint;
+using MetadataExtractor.Formats.Photoshop;
 
 public class FileOrFolderInfo
 {
@@ -44,65 +47,59 @@ public static class DirectoryScanner
             Size = (await GetDirectorySizeAsync(info)).ToString()
         };
 
-        var fileTasks = info.GetFiles().Select(async file =>
+        var ownerTasks = new List<Task>();
+
+        foreach (var file in info.GetFiles())
         {
             if (file.Name.StartsWith("~$") || file.Extension == ".lnk")
             {
-                return;
+                continue;
             }
 
             var creationDate = file.CreationTime.Date;
             var creationTime = file.CreationTime.TimeOfDay;
             var modifiedDate = file.LastWriteTime.Date;
             var modifiedTime = file.LastWriteTime.TimeOfDay;
-            var owner = await GetOwnerAsync(file);  // Await the GetOwnerAsync call
 
+            var fileInfo = new FileOrFolderInfo
+            {
+                Type = file.Extension == ".zip" ? "compressed file" : "file",
+                Parent = info.FullName,
+                CreatedDate = creationDate,
+                CreatedTime = creationTime,
+                AccessedDate = creationDate,
+                AccessedTime = creationTime,
+                ModifiedDate = modifiedDate,
+                ModifiedTime = modifiedTime,
+                Size = (file.Length / 1024f / 1024f).ToString() + " MB"
+            };
 
             if (file.Extension == ".zip")
             {
-                result.Children[file.Name] = new FileOrFolderInfo
-                {
-                    Type = "compressed file",
-                    Parent = info.FullName,
-                    Owner = owner,
-                    CreatedDate = creationDate,
-                    CreatedTime = creationTime,
-                    AccessedDate = creationDate,
-                    AccessedTime = creationTime,
-                    ModifiedDate = modifiedDate,
-                    ModifiedTime = modifiedTime,
-                    Size = GetReadableSize(file.Length),
-                    Children = await GetCompressedFileContentsAsync(file)
-                };
+                fileInfo.Children = await GetCompressedFileContentsAsync(file);
             }
-            else
+
+            result.Children[file.Name] = fileInfo;
+
+            // Start a task to compute the owner and store it in the list
+            var ownerTask = GetOwnerAsync(file).ContinueWith(t =>
             {
-                result.Children[file.Name] = new FileOrFolderInfo
-                {
-                    Type = "file",
-                    Parent = info.FullName,
-                    Owner = owner,
-                    CreatedDate = creationDate,
-                    CreatedTime = creationTime,
-                    AccessedDate = creationDate,
-                    AccessedTime = creationTime,
-                    ModifiedDate = modifiedDate,
-                    ModifiedTime = modifiedTime,
-                    Size = (file.Length / 1024f / 1024f).ToString() + " MB"
-                };
-            }
-        });
+                fileInfo.Owner = t.Result;  // Update the FileOrFolderInfo with the computed owner
+            });
+            ownerTasks.Add(ownerTask);
+        }
 
-        var directoryTasks = info.GetDirectories().Select(async directory =>
+        foreach (var directory in info.GetDirectories())
         {
-            result.Children[directory.Name] = await ScanDirectoryAsync(directory.FullName);
-        });
+            var directoryInfo = await ScanDirectoryAsync(directory.FullName);
+            result.Children[directory.Name] = directoryInfo;
+        }
 
-        await Task.WhenAll(fileTasks.Concat(directoryTasks));
+        // Wait for all the owner computation tasks to complete
+        await Task.WhenAll(ownerTasks);
 
         return result;
     }
-
 
 
     private static async Task<ConcurrentDictionary<string, FileOrFolderInfo>> GetCompressedFileContentsAsync(FileInfo compressedFile)
