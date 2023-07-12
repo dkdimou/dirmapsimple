@@ -1,15 +1,19 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
+using System.Threading.Tasks;
+using System.Collections.Concurrent;
 using Newtonsoft.Json;
 using System.Security.AccessControl;
 using System.Collections.Generic;
 using System.IO.Compression;
-using Aspose.Cells;
-using Aspose.Words;
-using Aspose.Slides;
-using Aspose.Pdf;
+using System.Threading.Tasks;
+using DocumentFormat.OpenXml.Packaging;
+using MetadataExtractor;
 using System.Reflection.Metadata;
-using System.Collections.Concurrent;
+using System.Security.Principal;
+using iTextSharp.text.pdf;
 
 public class FileOrFolderInfo
 {
@@ -30,34 +34,45 @@ public class FileOrFolderInfo
 
 public static class DirectoryScanner
 {
-    public static FileOrFolderInfo ScanDirectory(string path)
+    public static async Task<FileOrFolderInfo> ScanDirectoryAsync(string path)
     {
         var info = new DirectoryInfo(path);
         var result = new FileOrFolderInfo
         {
             Type = "folder",
             Parent = info.Parent?.FullName,
-            Size = GetDirectorySize(info).ToString(),
-            Children = new ConcurrentDictionary<string, FileOrFolderInfo>()  // Changed to ConcurrentDictionary
+            Size = (await GetDirectorySizeAsync(info)).ToString()
         };
 
-        Parallel.ForEach(info.GetFiles(), file =>  // Changed to Parallel.ForEach
+        var fileTasks = info.GetFiles().Select(async file =>
         {
+            if (file.Name.StartsWith("~$") || file.Extension == ".lnk")
+            {
+                return;
+            }
+
+            var creationDate = file.CreationTime.Date;
+            var creationTime = file.CreationTime.TimeOfDay;
+            var modifiedDate = file.LastWriteTime.Date;
+            var modifiedTime = file.LastWriteTime.TimeOfDay;
+            var owner = await GetOwnerAsync(file);  // Await the GetOwnerAsync call
+
+
             if (file.Extension == ".zip")
             {
                 result.Children[file.Name] = new FileOrFolderInfo
                 {
                     Type = "compressed file",
                     Parent = info.FullName,
-                    Owner = GetOwner(file),
-                    CreatedDate = file.CreationTime.Date,
-                    CreatedTime = file.CreationTime.TimeOfDay,
-                    AccessedDate = file.CreationTime.Date,
-                    AccessedTime = file.CreationTime.TimeOfDay,
-                    ModifiedDate = file.LastWriteTime.Date,
-                    ModifiedTime = file.LastWriteTime.TimeOfDay,
+                    Owner = owner,
+                    CreatedDate = creationDate,
+                    CreatedTime = creationTime,
+                    AccessedDate = creationDate,
+                    AccessedTime = creationTime,
+                    ModifiedDate = modifiedDate,
+                    ModifiedTime = modifiedTime,
                     Size = GetReadableSize(file.Length),
-                    Children = GetCompressedFileContents(file)
+                    Children = await GetCompressedFileContentsAsync(file)
                 };
             }
             else
@@ -66,42 +81,44 @@ public static class DirectoryScanner
                 {
                     Type = "file",
                     Parent = info.FullName,
-                    Owner = GetOwner(file),
-                    CreatedDate = file.CreationTime.Date,
-                    CreatedTime = file.CreationTime.TimeOfDay,
-                    AccessedDate = file.CreationTime.Date,
-                    AccessedTime = file.CreationTime.TimeOfDay,
-                    ModifiedDate = file.LastWriteTime.Date,
-                    ModifiedTime = file.LastWriteTime.TimeOfDay,
+                    Owner = owner,
+                    CreatedDate = creationDate,
+                    CreatedTime = creationTime,
+                    AccessedDate = creationDate,
+                    AccessedTime = creationTime,
+                    ModifiedDate = modifiedDate,
+                    ModifiedTime = modifiedTime,
                     Size = (file.Length / 1024f / 1024f).ToString() + " MB"
                 };
             }
         });
 
-        Parallel.ForEach(info.GetDirectories(), directory =>  // Changed to Parallel.ForEach
+        var directoryTasks = info.GetDirectories().Select(async directory =>
         {
-            result.Children[directory.Name] = ScanDirectory(directory.FullName);
+            result.Children[directory.Name] = await ScanDirectoryAsync(directory.FullName);
         });
+
+        await Task.WhenAll(fileTasks.Concat(directoryTasks));
 
         return result;
     }
 
 
 
-    private static ConcurrentDictionary<string, FileOrFolderInfo> GetCompressedFileContents(FileInfo compressedFile)  // Changed return type to ConcurrentDictionary
+    private static async Task<ConcurrentDictionary<string, FileOrFolderInfo>> GetCompressedFileContentsAsync(FileInfo compressedFile)
     {
-        var contents = new ConcurrentDictionary<string, FileOrFolderInfo>();  // Changed to ConcurrentDictionary
+        var contents = new ConcurrentDictionary<string, FileOrFolderInfo>();
 
         using (var archive = ZipFile.OpenRead(compressedFile.FullName))
         {
-            foreach (var entry in archive.Entries)
+            await Task.WhenAll(archive.Entries.Select(async entry =>
             {
                 contents[entry.Name] = new FileOrFolderInfo
                 {
                     Type = "file in compressed file",
                     Size = GetReadableSize(entry.Length)
                 };
-            }
+            }));
         }
 
         return contents;
@@ -109,48 +126,64 @@ public static class DirectoryScanner
 
 
 
-    private static long GetDirectorySize(DirectoryInfo directoryInfo)
+    private static async Task<long> GetDirectorySizeAsync(DirectoryInfo directoryInfo)
     {
         long size = 0;
         FileInfo[] files = directoryInfo.GetFiles();
-        foreach (FileInfo file in files)
-        {
-            size += file.Length;
-        }
-        DirectoryInfo[] directories = directoryInfo.GetDirectories();
-        foreach (DirectoryInfo directory in directories)
-        {
-            size += GetDirectorySize(directory);
-        }
+        size += files.Sum(file => file.Length);
+
+        var subdirectorySizes = await Task.WhenAll(directoryInfo.GetDirectories().Select(GetDirectorySizeAsync));
+        size += subdirectorySizes.Sum();
+
         return size;
     }
-    public static string GetOwner(FileInfo file)
+    public static class SupportedFormats
+    {
+        public static List<string> ImageTypes = new List<string> { ".jpg", ".jpeg", ".png", /* other image types */ };
+        public static List<string> VideoTypes = new List<string> { ".mp4", ".avi", /* other video types */ };
+        public static List<string> AudioTypes = new List<string> { ".mp3", ".wav", /* other audio types */ };
+    }
+    public static async Task<string> GetOwnerAsync(FileInfo file)
     {
         try
         {
-            if (file.Extension == ".doc" || file.Extension == ".docx" || file.Extension == ".docm")
+            if (file.Extension == ".docx" || file.Extension == ".xlsx" || file.Extension == ".pptx")
             {
-                var doc = new Aspose.Words.Document(file.FullName);
-                return doc.BuiltInDocumentProperties.Author;
+                using (var stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                using (var document = WordprocessingDocument.Open(stream, false))
+                {
+                    return document.PackageProperties.Creator;
+                }
             }
-            else if (file.Extension == ".xls" || file.Extension == ".xlsx" || file.Extension == ".xlsm")
+            else if (file.Extension == ".pdf")
             {
-                var workbook = new Aspose.Cells.Workbook(file.FullName);
-                return workbook.BuiltInDocumentProperties.Author;
+                using (var reader = new iTextSharp.text.pdf.PdfReader(file.FullName))
+                {
+                    var author = reader.Info["Author"];
+                    return author;
+                }
             }
-            else if (file.Extension == ".ppt" || file.Extension == ".pptx" || file.Extension == ".pptm")
+            else if (SupportedFormats.ImageTypes.Contains(file.Extension) ||
+                     SupportedFormats.VideoTypes.Contains(file.Extension) ||
+                     SupportedFormats.AudioTypes.Contains(file.Extension))
             {
-                var presentation = new Aspose.Slides.Presentation(file.FullName);
-                return presentation.DocumentProperties.Author;
-            }
-            else if (file.Extension == ".pbix")
-            {
-                // No direct way to extract the author of a .pbix file.
+                var directories = ImageMetadataReader.ReadMetadata(file.FullName);
+                foreach (var directory in directories)
+                {
+                    foreach (var tag in directory.Tags)
+                    {
+                        if (tag.Name == "Author")
+                        {
+                            return tag.Description;
+                        }
+                    }
+                }
                 return "Unknown";
             }
             else
             {
-                return file.GetAccessControl().GetOwner(typeof(System.Security.Principal.NTAccount)).ToString();
+                // This operation is inherently synchronous
+                return file.GetAccessControl().GetOwner(typeof(NTAccount)).ToString();
             }
         }
         catch
@@ -158,6 +191,7 @@ public static class DirectoryScanner
             return "Unable to retrieve author";
         }
     }
+
     public static string GetReadableSize(long length)
     {
         string[] sizes = { "B", "KB", "MB", "GB", "TB" };
@@ -175,15 +209,14 @@ public static class DirectoryScanner
 
 public class Program
 {
-    public static void Main()
+    public static async Task Main()
     {
         var result = new Dictionary<string, FileOrFolderInfo>
         {
-            ["root"] = DirectoryScanner.ScanDirectory(@"C:\\Users\\dimit\\Downloads")
+            ["root"] = await DirectoryScanner.ScanDirectoryAsync(@"C:\Users\dimit\OneDrive")
         };
-        var json = JsonConvert.SerializeObject(result, Formatting.Indented);
-        File.WriteAllText(@"C:\\Users\\dimit\\Documents\\output.json", json);
-
-
+        var json = JsonConvert.SerializeObject(result, Newtonsoft.Json.Formatting.Indented);
+        await File.WriteAllTextAsync(@"C:\\Users\\dimit\\Documents\\output.json", json);
     }
 }
+
