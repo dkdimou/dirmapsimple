@@ -5,6 +5,7 @@ using DocumentFormat.OpenXml.Packaging;
 using MetadataExtractor;
 using System.Security.Principal;
 using iTextSharp.text.pdf;
+using System.Security.AccessControl;
 
 public class FileOrFolderInfo
 {
@@ -128,7 +129,7 @@ public static class DirectoryScanner
         public static List<string> VideoTypes = new List<string> { ".mp4", ".avi", /* other video types */ };
         public static List<string> AudioTypes = new List<string> { ".mp3", ".wav", /* other audio types */ };
     }
- public static async Task<string> GetOwnerAsync(FileInfo file)
+public static async Task<string> GetOwnerAsync(FileInfo file)
 {
     const int maxRetries = 3;
     const int delayBase = 2; // Base delay in seconds, will be doubled every retry
@@ -137,74 +138,46 @@ public static class DirectoryScanner
     {
         try
         {
-            if (file.Extension == ".doc" || file.Extension == ".docm")
+            if ( file.Extension == ".docm")
             {
                 var document = new Spire.Doc.Document();
                 document.LoadFromFile(file.FullName);
                 return document.BuiltinDocumentProperties.Author;
             }
-            else if (file.Extension == ".xls" || file.Extension == ".xlsm")
+            else if (file.Extension == ".doc" || file.Extension == ".docx")
             {
-                var workbook = new Spire.Xls.Workbook();
-                workbook.LoadFromFile(file.FullName);
-                return workbook.DocumentProperties.Author;
+                using (var stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.Read))
+                {
+                    XWPFDocument doc = new XWPFDocument(stream);
+                    CoreProperties cp = doc.GetProperties().CoreProperties;
+                    return cp.Creator;
+                }
             }
-            else if (file.Extension == ".ppt" || file.Extension == ".pptm")
+            else if (file.Extension == ".xls" ||file.Extension == ".xlsx")
             {
-                var presentation = new Spire.Presentation.Presentation();
-                presentation.LoadFromFile(file.FullName);
-                return presentation.DocumentProperty.Application;
+                using (var stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.Read))
+                {
+                    XSSFWorkbook workbook = new XSSFWorkbook(stream);
+                    CoreProperties cp = workbook.GetProperties().CoreProperties;
+                    return cp.Creator;
+                }
             }
-            else if (file.Extension == ".docx")
-{
-    using (var stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-    {
-        var buffer = new byte[stream.Length];
-        await stream.ReadAsync(buffer, 0, (int)stream.Length);
-
-        using (var ms = new MemoryStream(buffer))
-        using (var document = WordprocessingDocument.Open(ms, false))
-        {
-            return document.PackageProperties.Creator;
-        }
-    }
-}
-else if (file.Extension == ".xlsx")
-{
-    using (var stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-    {
-        var buffer = new byte[stream.Length];
-        await stream.ReadAsync(buffer, 0, (int)stream.Length);
-
-        using (var ms = new MemoryStream(buffer))
-        using (var document = SpreadsheetDocument.Open(ms, false))
-        {
-            return document.PackageProperties.Creator;
-        }
-    }
-}
-else if (file.Extension == ".pptx")
-{
-    using (var stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-    {
-        var buffer = new byte[stream.Length];
-        await stream.ReadAsync(buffer, 0, (int)stream.Length);
-
-        using (var ms = new MemoryStream(buffer))
-        using (var document = PresentationDocument.Open(ms, false))
-        {
-            return document.PackageProperties.Creator;
-        }
-    }
-}
-
+            else if (file.Extension == ".ppt" || file.Extension == ".pptx")
+            {
+                using (var stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.Read))
+                {
+                    XMLSlideShow ppt = new XMLSlideShow(stream);
+                    CoreProperties cp = ppt.GetProperties().CoreProperties;
+                    return cp.Creator;
+                }
+            }
 
             else if (file.Extension == ".pdf")
             {
-                    using var reader = new PdfReader(file.FullName);
-                    string author = reader.Info["Author"];
-                    return author;
-                }
+                using var reader = new PdfReader(file.FullName);
+                string author = reader.Info["Author"];
+                return author;
+            }
             else if (SupportedFormats.ImageTypes.Contains(file.Extension) ||
                      SupportedFormats.VideoTypes.Contains(file.Extension) ||
                      SupportedFormats.AudioTypes.Contains(file.Extension))
@@ -222,6 +195,7 @@ else if (file.Extension == ".pptx")
                 }
                 throw new Exception("No author tag found in metadata");
             }
+
         }
         catch
         {
@@ -231,7 +205,25 @@ else if (file.Extension == ".pptx")
         try
         {
             // Next, try to get the owner from the file's access control
-            return file.GetAccessControl().GetOwner(typeof(NTAccount)).ToString();
+            var owner = file.GetAccessControl().GetOwner(typeof(NTAccount));
+            string fullOwner = owner != null ? owner.ToString() : null;
+            if (fullOwner != null)
+            {
+                string[] ownerParts = fullOwner.Split(new string[] {"\\", "//"}, StringSplitOptions.None);
+                if (ownerParts.Length > 1)
+                {
+                    return ownerParts[ownerParts.Length - 1];  // Return only the username part
+                }
+                else
+                {
+                    return fullOwner;  // If there is no separator in the owner string, return the whole string
+                }
+            }
+            else
+            {
+                // handle the case when fullOwner is null, return a default value or throw an exception
+                return "Unknown";
+            }
         }
         catch (System.Net.NetworkInformation.NetworkInformationException)
         {
@@ -248,19 +240,7 @@ else if (file.Extension == ".pptx")
         // If all else fails, return "Unknown"
         return "Unknown";
     }
-
-    // If we've exhausted our retries due to network disturbances, return "Unknown"
-    return "Unknown due to network disturbances";
 }
-
-
-
-    // This code will never be reached, but
-
-
-
-
-
     public static string GetReadableSize(long length)
     {
         string[] sizes = { "B", "KB", "MB", "GB", "TB" };
