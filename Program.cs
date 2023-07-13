@@ -155,20 +155,49 @@ public static class DirectoryScanner
                 presentation.LoadFromFile(file.FullName);
                 return presentation.DocumentProperty.Application;
             }
-            else if (file.Extension == ".docx" || file.Extension == ".xlsx" || file.Extension == ".pptx")
+            else if (file.Extension == ".docx")
+{
+    using (var stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
     {
-        using (var stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-        {
-            var buffer = new byte[stream.Length];
-            await stream.ReadAsync(buffer, 0, (int)stream.Length);
+        var buffer = new byte[stream.Length];
+        await stream.ReadAsync(buffer, 0, (int)stream.Length);
 
-            using (var ms = new MemoryStream(buffer))
-            using (var document = WordprocessingDocument.Open(ms, false))
-            {
-                return document.PackageProperties.Creator;
-            }
+        using (var ms = new MemoryStream(buffer))
+        using (var document = WordprocessingDocument.Open(ms, false))
+        {
+            return document.PackageProperties.Creator;
         }
     }
+}
+else if (file.Extension == ".xlsx")
+{
+    using (var stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+    {
+        var buffer = new byte[stream.Length];
+        await stream.ReadAsync(buffer, 0, (int)stream.Length);
+
+        using (var ms = new MemoryStream(buffer))
+        using (var document = SpreadsheetDocument.Open(ms, false))
+        {
+            return document.PackageProperties.Creator;
+        }
+    }
+}
+else if (file.Extension == ".pptx")
+{
+    using (var stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+    {
+        var buffer = new byte[stream.Length];
+        await stream.ReadAsync(buffer, 0, (int)stream.Length);
+
+        using (var ms = new MemoryStream(buffer))
+        using (var document = PresentationDocument.Open(ms, false))
+        {
+            return document.PackageProperties.Creator;
+        }
+    }
+}
+
 
             else if (file.Extension == ".pdf")
             {
@@ -253,10 +282,10 @@ public class Program
     {
         var result = new Dictionary<string, FileOrFolderInfo>
         {
-            ["root"] = await DirectoryScanner.ScanDirectoryAsync(@"C:\Users\dimit\Downloads")
+            ["root"] = await DirectoryScanner.ScanDirectoryAsync(@"")
         };
         var json = JsonConvert.SerializeObject(result, Newtonsoft.Json.Formatting.Indented);
-        await File.WriteAllTextAsync(@"C:\\Users\\dimit\\Documents\\output.json", json);
+        await File.WriteAllTextAsync(@"C:\\...\\output.json", json);
     }
 }
 
