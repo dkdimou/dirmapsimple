@@ -1,11 +1,19 @@
-﻿using System.Collections.Concurrent;
-using Newtonsoft.Json;
-using System.IO.Compression;
-using DocumentFormat.OpenXml.Packaging;
+﻿using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.IO;
+using System.IO.Packaging; // For Open XML SDK
+using System.Linq;
+using System.Threading.Tasks;
+using NPOI.XSSF.UserModel; // For XSSFWorkbook
+using NPOI.HSSF.UserModel; // For HSSFWorkbook (if used)
+using NPOI.XWPF.UserModel; // For XWPFDocument (if used)
+using NPOI.HPSF; // For SummaryInformation (if used)
+using iTextSharp.text.pdf;
 using MetadataExtractor;
 using System.Security.Principal;
-using iTextSharp.text.pdf;
-using System.Security.AccessControl;
+using System.IO.Compression;
+using Newtonsoft.Json;
 
 public class FileOrFolderInfo
 {
@@ -138,40 +146,40 @@ public static async Task<string> GetOwnerAsync(FileInfo file)
     {
         try
         {
-            if ( file.Extension == ".docm")
-            {
-                var document = new Spire.Doc.Document();
-                document.LoadFromFile(file.FullName);
-                return document.BuiltinDocumentProperties.Author;
-            }
-            else if (file.Extension == ".doc" || file.Extension == ".docx")
-            {
-                using (var stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.Read))
-                {
-                    XWPFDocument doc = new XWPFDocument(stream);
-                    CoreProperties cp = doc.GetProperties().CoreProperties;
-                    return cp.Creator;
-                }
-            }
-            else if (file.Extension == ".xls" ||file.Extension == ".xlsx")
-            {
-                using (var stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.Read))
-                {
-                    XSSFWorkbook workbook = new XSSFWorkbook(stream);
-                    CoreProperties cp = workbook.GetProperties().CoreProperties;
-                    return cp.Creator;
-                }
-            }
-            else if (file.Extension == ".ppt" || file.Extension == ".pptx")
-            {
-                using (var stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.Read))
-                {
-                    XMLSlideShow ppt = new XMLSlideShow(stream);
-                    CoreProperties cp = ppt.GetProperties().CoreProperties;
-                    return cp.Creator;
-                }
-            }
+            string[] supportedExtensions = new[] { ".docx", ".dotx", ".docm", ".dotm", ".xlsx", ".xltx", ".xlsm", ".xltm", ".pptx", ".potx", ".pptm", ".potm" };
 
+            if (supportedExtensions.Contains(file.Extension))
+            {
+                using (Package package = Package.Open(file.FullName, FileMode.Open, FileAccess.Read))
+                {
+                    PackageProperties packageProperties = package.PackageProperties;
+                    return packageProperties.Creator;
+                }
+            }
+            
+            else if (file.Extension == ".doc")
+            {
+            Spire.Doc.Document doc = new Spire.Doc.Document();
+            doc.LoadFromFile(file.FullName);
+            string author = doc.BuiltinDocumentProperties.Author;
+            return author;
+            }
+            else if (file.Extension == ".ppt")
+            {
+                Spire.Presentation.Presentation ppt = new Spire.Presentation.Presentation();
+                ppt.LoadFromFile(file.FullName);
+                string author = ppt.DocumentProperty.Application;
+                return author;
+            }
+            else if (file.Extension == ".xls")
+            {
+                using (var stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.Read))
+                {
+                    HSSFWorkbook workbook = new HSSFWorkbook(stream);
+                    SummaryInformation si = workbook.SummaryInformation;
+                    return si.Author;
+                }
+            }            
             else if (file.Extension == ".pdf")
             {
                 using var reader = new PdfReader(file.FullName);
@@ -201,7 +209,6 @@ public static async Task<string> GetOwnerAsync(FileInfo file)
         {
             // If getting the author from the file properties fails, proceed to the next approach
         }
-
         try
         {
             // Next, try to get the owner from the file's access control
@@ -236,10 +243,9 @@ public static async Task<string> GetOwnerAsync(FileInfo file)
         {
             // If getting the owner from the file's access control fails for a non-network-related reason, proceed to the next approach
         }
-
-        // If all else fails, return "Unknown"
-        return "Unknown";
     }
+    // If all else fails, return "Unknown"
+        return "Unknown";
 }
     public static string GetReadableSize(long length)
     {
@@ -262,10 +268,10 @@ public class Program
     {
         var result = new Dictionary<string, FileOrFolderInfo>
         {
-            ["root"] = await DirectoryScanner.ScanDirectoryAsync(@"")
+            ["root"] = await DirectoryScanner.ScanDirectoryAsync(@"C:\Users\dimit\Downloads")
         };
         var json = JsonConvert.SerializeObject(result, Newtonsoft.Json.Formatting.Indented);
-        await File.WriteAllTextAsync(@"C:\\...\\output.json", json);
+        await File.WriteAllTextAsync(@"C:\Users\dimit\source\repos\ConsoleApp1\ConsoleApp1\output.json", json);
     }
 }
 
